@@ -15,21 +15,51 @@ RUN apt-get update && \
 ENV OPENCV_IO_ENABLE_NONFREE=0
 ENV QT_QPA_PLATFORM=offscreen
 
+# Copy and install DeepSafe SDK first
 COPY sdk/ /app/sdk/
 RUN pip install --no-cache-dir /app/sdk/
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
+# CPU PyTorch
 RUN pip install --no-cache-dir \
     torch==2.0.1 \
     torchvision==0.15.2 \
     torchaudio==2.0.2 \
     --index-url https://download.pytorch.org/whl/cpu
 
-RUN pip install --no-cache-dir opencv-python-headless
+# Server-safe OpenCV + Google Drive fallback helper
+RUN pip install --no-cache-dir \
+    opencv-python-headless==4.6.0.66 \
+    gdown
 
 COPY models/video/cross_efficient_vit/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# IMPORTANT FIX:
+# DeepSafe SDK uses Pydantic v2 method: result.model_dump(...)
+# But this model requirements may install Pydantic v1, causing:
+# AttributeError: 'PredictionResult' object has no attribute 'model_dump'
+RUN pip install --no-cache-dir --force-reinstall "pydantic==2.3.0"
+
+# Optional build-time check
+RUN python - <<'PY'
+import pydantic
+from deepsafe_sdk.types import PredictionResult
+
+print("Pydantic version:", pydantic.__version__)
+
+r = PredictionResult(
+    model="test",
+    probability=0.5,
+    prediction=0,
+    class_name="real",
+    inference_time=0.1,
+)
+
+assert hasattr(r, "model_dump"), "Pydantic v2 model_dump() missing"
+print(r.model_dump(by_alias=True))
+PY
 
 COPY models/video/cross_efficient_vit/ /app/model/
 
@@ -41,7 +71,7 @@ RUN git clone https://github.com/davide-coccomini/Combining-EfficientNet-and-Vis
 RUN mkdir -p /app/model/model_code/efficient-vit/pretrained_models && \
     mkdir -p /app/model/model_code/cross-efficient-vit/pretrained_models
 
-# Download model weights (HuggingFace mirror with Google Drive fallback)
+# Download model weights: HuggingFace mirror with Google Drive fallback
 RUN (wget -O /app/model/model_code/cross-efficient-vit/pretrained_models/cross_efficient_vit.pth \
     https://huggingface.co/siddharthksah/DeepSafe-weights/resolve/main/cross_efficient_vit/cross_efficient_vit.pth && \
     wget -O /app/model/model_code/efficient-vit/pretrained_models/efficient_vit.pth \
